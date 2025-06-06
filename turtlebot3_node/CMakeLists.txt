@@ -28,6 +28,7 @@ find_package(std_srvs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(turtlebot3_msgs REQUIRED)
+find_package(robot_msgs REQUIRED)
 
 ################################################################################
 # Build
@@ -65,6 +66,7 @@ set(DEPENDENCIES
   "tf2"
   "tf2_ros"
   "turtlebot3_msgs"
+  "robot_msgs"
 )
 
 target_link_libraries(${PROJECT_NAME}_lib)

@@ -21,21 +21,21 @@
 
 #include <array>
 #include <chrono>
+#include <geometry_msgs/msg/twist.hpp>
 #include <list>
 #include <map>
 #include <memory>
 #include <mutex>
-#include <string>
-#include <queue>
-
-#include <geometry_msgs/msg/twist.hpp>
 #include <nav_msgs/msg/odometry.hpp>
+#include <queue>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/battery_state.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
+#include <string>
 #include <turtlebot3_msgs/msg/sensor_state.hpp>
 
+#include "robot_msgs/srv/precise_control.hpp"
 #include "turtlebot3_node/control_table.hpp"
 #include "turtlebot3_node/devices/devices.hpp"
 #include "turtlebot3_node/devices/motor_power.hpp"
@@ -50,34 +50,29 @@
 #include "turtlebot3_node/sensors/sensors.hpp"
 #include "turtlebot3_node/twist_subscriber.hpp"
 
-namespace robotis
-{
-namespace turtlebot3
-{
+namespace robotis {
+namespace turtlebot3 {
 extern const ControlTable extern_control_table;
-class TurtleBot3 : public rclcpp::Node
-{
-public:
-  typedef struct
-  {
+class TurtleBot3 : public rclcpp::Node {
+ public:
+  typedef struct {
     float separation;
     float radius;
   } Wheels;
 
-  typedef struct
-  {
+  typedef struct {
     float profile_acceleration_constant;
     float profile_acceleration;
   } Motors;
 
-  explicit TurtleBot3(const std::string & usb_port);
+  explicit TurtleBot3(const std::string& usb_port);
   virtual ~TurtleBot3() {}
 
-  Wheels * get_wheels();
-  Motors * get_motors();
+  Wheels* get_wheels();
+  Motors* get_motors();
 
-private:
-  void init_dynamixel_sdk_wrapper(const std::string & usb_port);
+ private:
+  void init_dynamixel_sdk_wrapper(const std::string& usb_port);
   void check_device_status();
 
   void add_sensors();
@@ -94,13 +89,27 @@ private:
   void parameter_event_callback();
   void cmd_lift_callback();  // 리프트 모터 제어 콜백 추가
 
+  void precise_control_service_callback();
+  void handle_precise_control(const std::shared_ptr<robot_msgs::srv::PreciseControl::Request> request, std::shared_ptr<robot_msgs::srv::PreciseControl::Response> response);
+
+  // ================ 정밀 제어 동작 메서드 ================
+  bool perform_rotate_180(double& duration);
+  bool perform_backward_20cm(double& duration);
+  bool perform_pickup_sequence(double& duration);
+
+  // ================ 헬퍼 메서드 ================
+  void send_cmd_vel(double linear_x, double angular_z);
+  void send_lift_cmd(double lift_z);
+  void wait_for_duration(double seconds);
+  void stop_all_motors();
+
   Wheels wheels_;
   Motors motors_;
 
   std::shared_ptr<DynamixelSDKWrapper> dxl_sdk_wrapper_;
 
-  std::list<sensors::Sensors *> sensors_;
-  std::map<std::string, devices::Devices *> devices_;
+  std::list<sensors::Sensors*> sensors_;
+  std::map<std::string, devices::Devices*> devices_;
 
   std::unique_ptr<Odometry> odom_;
 
@@ -114,6 +123,16 @@ private:
 
   rclcpp::AsyncParametersClient::SharedPtr priv_parameters_client_;
   rclcpp::Subscription<rcl_interfaces::msg::ParameterEvent>::SharedPtr parameter_event_sub_;
+
+  // 정밀 제어 서비스 서버 추가
+  rclcpp::Service<robot_msgs::srv::PreciseControl>::SharedPtr precise_control_service_;
+
+  // ================ 정밀 제어 관련 상수 ================
+  static constexpr double LINEAR_SPEED = 0.1;       // 선형 속도 (m/s)
+  static constexpr double ROTATION_SPEED = 0.5;     // 회전 속도 (rad/s)
+  static constexpr double LIFT_SPEED = 0.3;         // 리프트 속도
+  static constexpr double ROTATION_ANGLE = M_PI;    // 180도 = π 라디안
+  static constexpr double BACKWARD_DISTANCE = 0.2;  // 20cm 후진
 };
 }  // namespace turtlebot3
 }  // namespace robotis

@@ -158,7 +158,8 @@ void TurtleBot3::run() {
 
   parameter_event_callback();
   cmd_vel_callback();
-  cmd_lift_callback();  // 리프트 모터 콜백 추가
+  cmd_lift_callback();                 // 리프트 모터 콜백 추가
+  precise_control_service_callback();  // 정밀 제어 서비스 추가
 }
 
 void TurtleBot3::publish_timer(const std::chrono::milliseconds timeout) {
@@ -310,4 +311,214 @@ void TurtleBot3::cmd_lift_callback() {
 
         RCLCPP_DEBUG(this->get_logger(), "lift_vel: %f msg: %s", msg->twist.linear.z, sdk_msg.c_str());
       }));
+}
+
+// ================ 정밀 제어 서비스 구현 ================
+
+void TurtleBot3::precise_control_service_callback() {
+  precise_control_service_ =
+      this->create_service<robot_msgs::srv::PreciseControl>("precise_control", std::bind(&TurtleBot3::handle_precise_control, this, std::placeholders::_1, std::placeholders::_2));
+
+  RCLCPP_INFO(this->get_logger(), "정밀 제어 서비스가 준비되었습니다");
+}
+
+void TurtleBot3::handle_precise_control(const std::shared_ptr<robot_msgs::srv::PreciseControl::Request> request, std::shared_ptr<robot_msgs::srv::PreciseControl::Response> response) {
+  RCLCPP_INFO(this->get_logger(), "정밀 제어 요청 수신: %s", request->action.c_str());
+
+  auto start_time = std::chrono::steady_clock::now();
+  double duration = 0.0;
+  bool success = false;
+
+  try {
+    if (request->action == "rotate_180") {
+      success = perform_rotate_180(duration);
+      response->message = "180도 회전 완료";
+
+    } else if (request->action == "backward_20cm") {
+      success = perform_backward_20cm(duration);
+      response->message = "20cm 후진 완료";
+
+    } else if (request->action == "pickup_sequence") {
+      success = perform_pickup_sequence(duration);
+      response->message = "픽업 시퀀스 완료";
+
+    } else {
+      success = false;
+      response->message = "알 수 없는 동작: " + request->action;
+      RCLCPP_WARN(this->get_logger(), "알 수 없는 동작 요청: %s", request->action.c_str());
+    }
+
+  } catch (const std::exception &e) {
+    success = false;
+    response->message = "실행 중 오류 발생: " + std::string(e.what());
+    RCLCPP_ERROR(this->get_logger(), "정밀 제어 오류: %s", e.what());
+  }
+
+  // 최종적으로 모든 모터 정지
+  stop_all_motors();
+
+  response->success = success;
+  response->duration = duration;
+
+  RCLCPP_INFO(this->get_logger(), "정밀 제어 완료: %s (%.2f초)", success ? "성공" : "실패", duration);
+}
+
+bool TurtleBot3::perform_rotate_180(double &duration) {
+  RCLCPP_INFO(this->get_logger(), "180도 회전 시작");
+
+  auto start_time = std::chrono::steady_clock::now();
+
+  // 회전 시간 계산 (180도 = π 라디안)
+  double rotation_time = ROTATION_ANGLE / ROTATION_SPEED;
+
+  // 회전 시작
+  send_cmd_vel(0.0, ROTATION_SPEED);
+
+  // 회전 시간만큼 대기
+  wait_for_duration(rotation_time);
+
+  // 정지
+  stop_all_motors();
+
+  // 안정화를 위한 짧은 대기
+  wait_for_duration(0.5);
+
+  auto end_time = std::chrono::steady_clock::now();
+  duration = std::chrono::duration<double>(end_time - start_time).count();
+
+  RCLCPP_INFO(this->get_logger(), "180도 회전 완료 (%.2f초)", duration);
+  return true;
+}
+
+bool TurtleBot3::perform_backward_20cm(double &duration) {
+  RCLCPP_INFO(this->get_logger(), "20cm 후진 시작");
+
+  auto start_time = std::chrono::steady_clock::now();
+
+  // 후진 시간 계산 (거리 / 속도)
+  double backward_time = BACKWARD_DISTANCE / LINEAR_SPEED;
+
+  // 후진 시작
+  send_cmd_vel(-LINEAR_SPEED, 0.0);
+
+  // 후진 시간만큼 대기
+  wait_for_duration(backward_time);
+
+  // 정지
+  stop_all_motors();
+
+  // 안정화를 위한 짧은 대기
+  wait_for_duration(0.5);
+
+  auto end_time = std::chrono::steady_clock::now();
+  duration = std::chrono::duration<double>(end_time - start_time).count();
+
+  RCLCPP_INFO(this->get_logger(), "20cm 후진 완료 (%.2f초)", duration);
+  return true;
+}
+
+bool TurtleBot3::perform_pickup_sequence(double &duration) {
+  RCLCPP_INFO(this->get_logger(), "픽업 시퀀스 시작");
+
+  auto start_time = std::chrono::steady_clock::now();
+  double step_duration = 0.0;
+
+  try {
+    // 1단계: 180도 회전
+    RCLCPP_INFO(this->get_logger(), "1단계: 180도 회전");
+    if (!perform_rotate_180(step_duration)) {
+      RCLCPP_ERROR(this->get_logger(), "180도 회전 실패");
+      return false;
+    }
+
+    // 2단계: 20cm 후진
+    RCLCPP_INFO(this->get_logger(), "2단계: 20cm 후진");
+    if (!perform_backward_20cm(step_duration)) {
+      RCLCPP_ERROR(this->get_logger(), "20cm 후진 실패");
+      return false;
+    }
+
+    // 3단계: 리프트 올리기
+    RCLCPP_INFO(this->get_logger(), "3단계: 리프트 올리기");
+    send_lift_cmd(LIFT_SPEED);
+    wait_for_duration(1.0);  // 1초간 리프트 올리기
+
+    // 4단계: 리프트 정지
+    RCLCPP_INFO(this->get_logger(), "4단계: 리프트 정지");
+    send_lift_cmd(0.0);
+    wait_for_duration(0.5);  // 안정화 대기
+
+    auto end_time = std::chrono::steady_clock::now();
+    duration = std::chrono::duration<double>(end_time - start_time).count();
+
+    RCLCPP_INFO(this->get_logger(), "픽업 시퀀스 완료 (%.2f초)", duration);
+    return true;
+
+  } catch (const std::exception &e) {
+    RCLCPP_ERROR(this->get_logger(), "픽업 시퀀스 중 오류: %s", e.what());
+    return false;
+  }
+}
+
+// ================ 헬퍼 메서드들 ================
+
+void TurtleBot3::send_cmd_vel(double linear_x, double angular_z) {
+  std::string sdk_msg;
+
+  union Data {
+    int32_t dword[6];
+    uint8_t byte[4 * 6];
+  } data;
+
+  data.dword[0] = static_cast<int32_t>(linear_x * 100);
+  data.dword[1] = 0;
+  data.dword[2] = 0;
+  data.dword[3] = 0;
+  data.dword[4] = 0;
+  data.dword[5] = static_cast<int32_t>(angular_z * 100);
+
+  uint16_t start_addr = extern_control_table.cmd_velocity_linear_x.addr;
+  uint16_t addr_length = (extern_control_table.cmd_velocity_angular_z.addr - extern_control_table.cmd_velocity_linear_x.addr) + extern_control_table.cmd_velocity_angular_z.length;
+
+  uint8_t *p_data = &data.byte[0];
+
+  dxl_sdk_wrapper_->set_data_to_device(start_addr, addr_length, p_data, &sdk_msg);
+
+  RCLCPP_DEBUG(this->get_logger(), "정밀 제어 - lin_vel: %f ang_vel: %f", linear_x, angular_z);
+}
+
+void TurtleBot3::send_lift_cmd(double lift_z) {
+  std::string sdk_msg;
+  int32_t lift_value = static_cast<int32_t>(lift_z * 100);
+
+  uint8_t lift_data[4] = {0};
+  memcpy(lift_data, &lift_value, sizeof(lift_value));
+
+  dxl_sdk_wrapper_->set_data_to_device(extern_control_table.cmd_velocity_lift.addr, extern_control_table.cmd_velocity_lift.length, lift_data, &sdk_msg);
+
+  RCLCPP_DEBUG(this->get_logger(), "정밀 제어 - lift_vel: %f", lift_z);
+}
+
+void TurtleBot3::wait_for_duration(double seconds) {
+  rclcpp::WallRate rate(50);  // 50Hz로 스핀하면서 대기
+  auto start_time = std::chrono::steady_clock::now();
+
+  while (rclcpp::ok()) {
+    auto current_time = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration<double>(current_time - start_time).count();
+
+    if (elapsed >= seconds) {
+      break;
+    }
+
+    // 센서 데이터 계속 읽기
+    dxl_sdk_wrapper_->read_data_set();
+
+    rate.sleep();
+  }
+}
+
+void TurtleBot3::stop_all_motors() {
+  send_cmd_vel(0.0, 0.0);
+  send_lift_cmd(0.0);
 }
